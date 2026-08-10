@@ -90,6 +90,7 @@ import { IconSearch, IconChat, IconMic, IconReload } from '../components/icons'
 import { NodeLabels } from '../components/kanban/NodeLabels'
 import { Tooltip } from '../components/Tooltip'
 import { useTerminalSearch } from '../terminal/useTerminalSearch'
+import { useCopyFeedback } from '../terminal/useCopyFeedback'
 import { ContextMeter } from '../components/ContextMeter'
 import { isZoomModifierHeld } from '../lib/zoomModifier'
 import { isHidden } from '../lib/ui-visibility'
@@ -106,7 +107,7 @@ import { useWorktrees } from '../state/worktrees'
 import { isRemoteSessionNode } from '@shared/worktree'
 import { useSession, useActiveSessionPresence } from '../session/session'
 import { accountChipLabel, COLLAPSED_HEIGHT, NODE_COLORS, type CanvasNode } from '../state/workspace'
-import { hasHooks, canRecur, canContextLink, hasUsage, canChat, canResume, canRename, canReadTitle, createdAgentId, resumeCommand, agentConfig } from '@shared/agents/config'
+import { hasHooks, canRecur, canContextLink, hasUsage, canChat, canResume, canRename, canReadTitle, createdAgentId, reportsOwnCopy, resumeCommand, agentConfig } from '@shared/agents/config'
 import { withPermissionMode } from '@shared/agents/approval-mode'
 import { ensureActivePermissionMode } from '../state/permissionMode'
 import { buildSshArgs, type SshConnection } from '@shared/ssh'
@@ -608,6 +609,15 @@ const coSubs = new Map<string, (s: CoState) => void>()
  */
 const restartSubs = new Map<string, () => void>()
 
+/**
+ * The mounted instance publishes its copy-feedback sink here, for the same reason as
+ * `restartSubs`: the OSC 52 handler is registered ONCE per xterm instance and that instance
+ * SURVIVES A PARK (project switch → remount within TERM_PARK_MS), so a handler holding this
+ * component's `setState` would be feeding a component that unmounted two projects ago. Looked up
+ * at call time instead. No entry = nobody is mounted = nothing to show.
+ */
+const copySubs = new Map<string, (text: string) => void>()
+
 function getCo(key: string): CoState {
   return coStates.get(key) ?? NO_CO
 }
@@ -708,6 +718,29 @@ export function TerminalNode({
   // ResizeObserver in the lifecycle effect.
   const rootRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
+  // Copy feedback: the `Copied` pill (fed by the OSC 52 handler below, through `copySubs`) and the
+  // one-time "hold ⌥ to select" hint for a pane whose app captured the mouse.
+  // The host is `bodyRef` (`.term-node__xterm`) and NOT the node body on purpose: the hover guard
+  // (`.term-hover-guard`) is a SIBLING of that element, so pre-dwell drags — the ones that MOVE the
+  // node — never reach this listener. Hosting it on `.term-node__body` would make every node-move
+  // drag a hint candidate and burn the once-per-installation hint on a gesture that has nothing to
+  // do with copying.
+  // OFF for an agent whose own CLI reports its copies (`reportsOwnCopy` — claude prints "copied N
+  // chars to tmux buffer" itself), so that terminal is byte-identical to before the feature.
+  // `createdAgentId` is called again here rather than reusing the `agentId` const below: this hook
+  // sits above it, and duplicating a pure read of `data` is cheaper than reordering declarations
+  // in this file's lifecycle block.
+  const copy = useCopyFeedback({
+    hostRef: bodyRef,
+    hasSelection: () => !!termRef.current?.hasSelection(),
+    enabled: !reportsOwnCopy(createdAgentId(data))
+  })
+  useEffect(() => {
+    copySubs.set(termKey, copy.notifyCopy)
+    return () => {
+      if (copySubs.get(termKey) === copy.notifyCopy) copySubs.delete(termKey)
+    }
+  }, [termKey, copy.notifyCopy])
   const fitRef = useRef<FitAddon | null>(null)
   const searchAddonRef = useRef<SearchAddon | null>(null)
   // The live session's "measure my grid, render it, report it" routine (set by the lifecycle
@@ -1736,7 +1769,11 @@ export function TerminalNode({
       // read the local clipboard. Returning true swallows the sequence (also the read query).
       term.parser.registerOscHandler(52, (data) => {
         const text = parseOsc52(data)
-        if (text !== null) window.nodeTerminal.clipboard.writeText(text)
+        if (text !== null) {
+          window.nodeTerminal.clipboard.writeText(text)
+          // Through the registry, never a captured setState: this handler outlives a park.
+          copySubs.get(termKey)?.(text)
+        }
         return true
       })
       // Cmd (mac) / Ctrl+click link opening. URLs → default browser via createUrlLinkProvider
@@ -2228,9 +2265,19 @@ export function TerminalNode({
           updateNodeData(id, { initialCommand: undefined })
         } else if (fresh && agentId && canResume(agentId)) {
           // Cold restart of an agent node: the live agent is gone, so re-launch it. Resume the
-          // prior conversation by its session id (known from hooks) when we have one; otherwise
-          // start the agent fresh. Plain terminals get nothing here — just the restored shell.
-          const priorId = useAgentStatus.getState().byId[id]?.sessionId
+          // prior conversation by its session id when we have one; otherwise start the agent
+          // fresh. Plain terminals get nothing here — just the restored shell.
+          //
+          // Two sources, in this order, and the order is the whole point:
+          //  1. the LIVE id from hooks, which tracks `/clear` and `--fork-session` minting a new
+          //     one mid-conversation, so it is the only one that can be current;
+          //  2. the id nodeterm MINTED at node creation and persisted (`data.agentSessionId`).
+          // Falling back to (2) is what stops a cold start from opening a blank conversation when
+          // no hook ever landed. That is not hypothetical: hook POSTs from an SSH node ride the
+          // reverse tunnel, and after one host reboot 18 of 40 agent nodes had no id at all and
+          // relaunched empty while their transcripts sat on disk, unreachable.
+          const st = useAgentStatus.getState().byId[id]
+          const priorId = st?.sessionId || data.agentSessionId
           const base = (priorId && resumeCommand(agentId, priorId)) || agentConfig(agentId)?.launchCmd
           // Re-resolve the mode at relaunch: it's a property of how a session is launched, not
           // a persisted property of the node, so the current setting wins after a reboot. `base`
@@ -3377,6 +3424,16 @@ export function TerminalNode({
           <div className={`term-node__upload${uploadNote.failed ? ' failed' : ''}`}>
             {!uploadNote.failed && <span className="term-node__upload-spin" />}
             {uploadNote.text}
+          </div>
+        )}
+        {/* Copy receipt / selection hint — floated over the terminal's bottom-right rather than
+            worn as a header chip. It belongs where the user's eyes just were (the drag they
+            finished), and the header cannot hold it: on a narrow node with the SSH chip and
+            RUNNING already there, one more chip pushes the × under `.term-node`'s overflow.
+            Bottom-RIGHT specifically — every agent CLI writes its input line bottom-LEFT. */}
+        {copy.feedback && (
+          <div className={`term-copy-pill term-copy-pill--${copy.feedback.kind}`}>
+            {copy.feedback.label}
           </div>
         )}
         {co.closed && (
