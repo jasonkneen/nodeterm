@@ -27,10 +27,19 @@ export interface RemoteWorkspaceIO {
 
 const projectFilePath = (cwd: string): string => path.join(cwd, PROJECT_DIR, PROJECT_FILE)
 
+/** Monotonic suffix so concurrent writers (save() vs the SSH poll) never share a tmp file —
+ *  a shared `.tmp` path lets one writer rename the other's half-written bytes into place. */
+let atomicSeq = 0
+
 async function writeAtomic(filePath: string, content: string): Promise<void> {
-  const tmp = `${filePath}.tmp`
-  await fs.writeFile(tmp, content, 'utf-8')
-  await fs.rename(tmp, filePath)
+  const tmp = `${filePath}.${process.pid}.${++atomicSeq}.tmp`
+  try {
+    await fs.writeFile(tmp, content, 'utf-8')
+    await fs.rename(tmp, filePath)
+  } catch (e) {
+    await fs.rm(tmp, { force: true }).catch(() => {})
+    throw e
+  }
 }
 
 /**

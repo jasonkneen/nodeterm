@@ -5,6 +5,7 @@ import { AGENT_CONFIG, BUILTIN_AGENT_IDS, type BuiltinAgentId } from '@shared/ag
 import { isHoldChord, shortcutKeyParts } from '@shared/shortcut'
 import { keyLabel } from '@shared/platform-utils'
 import { IOS_APP_STORE_URL } from '../../lib/links'
+import { formatSize, modelLabel } from '../../lib/speech-format'
 import { useSettings } from '../../state/settings'
 import { useEntitlement } from '../../state/entitlement'
 import { Switch } from '@renderer/ui/Switch'
@@ -22,18 +23,6 @@ import {
 } from './scenes'
 
 const isMac = /Mac/i.test(navigator.platform || navigator.userAgent)
-
-/** `large-v3-turbo` -> `"Large V3 Turbo"` (same rendering as Settings → Speech). */
-function modelLabel(id: string): string {
-  return id
-    .split('-')
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ')
-}
-
-function formatSize(mb: number): string {
-  return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${Math.round(mb)} MB`
-}
 
 /** Info step + the setting it configures, one per screen. Step 0 is the welcome cover; the last
  *  step is the mobile-app announcement (info-only). Steps are addressed by ID, not index, because

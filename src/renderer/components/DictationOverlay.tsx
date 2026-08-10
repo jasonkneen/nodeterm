@@ -197,7 +197,9 @@ export function DictationOverlay({ target, stopSignal, onClose, onOpenLicense }:
       const elapsed = Date.now() - startedAtRef.current
       setElapsedMs(elapsed)
       const level = captureRef.current?.level() ?? 0
-      setLevelHistory((prev) => [...prev, level])
+      // Keep only what the equalizer reads (the last 7 samples) — an unbounded history
+      // reallocates a growing array 20×/s for the whole take.
+      setLevelHistory((prev) => [...prev.slice(-6), level])
       if (isAtRecordingCap(elapsed)) {
         // clearTimer() inside stopRecording fires synchronously before any await, so this can't
         // re-enter on the next tick.

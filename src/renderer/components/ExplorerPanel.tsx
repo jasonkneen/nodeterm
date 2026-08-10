@@ -346,8 +346,24 @@ export function ExplorerPanel({ onClose, onOpenFile, reveal }: ExplorerPanelProp
   )
 
   useEffect(() => {
-    if (cwd) fs.list(cwd).then(setRoots)
-    else setRoots(null)
+    if (!cwd) {
+      setRoots(null)
+      return
+    }
+    // Same stale-response guard the TreeEntry child loader uses: a slow in-flight list (SSH
+    // ControlMaster) must not overwrite the NEW project's tree after cwd/fs changed, and a
+    // rejection (dead transport) must not surface as an unhandled promise.
+    let cancelled = false
+    fs.list(cwd)
+      .then((c) => {
+        if (!cancelled) setRoots(c)
+      })
+      .catch(() => {
+        if (!cancelled) setRoots([])
+      })
+    return () => {
+      cancelled = true
+    }
   }, [cwd, version, fs])
 
   // Reveal a file: force-open every ancestor directory under cwd, select the file, and

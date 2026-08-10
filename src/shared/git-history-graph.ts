@@ -2,7 +2,9 @@ import type { GitHistoryGraphColorId, GitHistoryItem, GitHistoryItemRef } from '
 import {
   GIT_HISTORY_INCOMING_CHANGES_ID,
   GIT_HISTORY_OUTGOING_CHANGES_ID,
-  addIncomingOutgoingChangesHistoryItems
+  addIncomingOutgoingChangesHistoryItems,
+  cloneNode,
+  findLastIndex
 } from './git-history-boundary-rows'
 import {
   GIT_HISTORY_BASE_REF_COLOR,
@@ -27,19 +29,6 @@ export type GitHistoryItemViewModel = {
 
 function rotate(index: number, length: number): number {
   return ((index % length) + length) % length
-}
-
-function cloneNode(node: GitHistoryGraphNode): GitHistoryGraphNode {
-  return { id: node.id, color: node.color }
-}
-
-function findLastIndex<T>(items: readonly T[], predicate: (item: T) => boolean): number {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (predicate(items[index] as T)) {
-      return index
-    }
-  }
-  return -1
 }
 
 function findLastNodeIndex(nodes: readonly GitHistoryGraphNode[], id: string): number {
@@ -103,6 +92,8 @@ export function buildGitHistoryViewModels(
 ): GitHistoryItemViewModel[] {
   let colorIndex = -1
   const viewModels: GitHistoryItemViewModel[] = []
+  // id → item, so the per-merge-parent lookup below is O(1) instead of a linear scan per parent.
+  const itemsById = new Map(historyItems.map((item) => [item.id, item]))
 
   for (const historyItem of historyItems) {
     const kind = historyItem.id === currentRef?.revision ? 'HEAD' : 'node'
@@ -131,7 +122,7 @@ export function buildGitHistoryViewModels(
       if (index === 0) {
         colorIdentifier = getLabelColorIdentifier(historyItem, colorMap)
       } else {
-        const parent = historyItems.find((item) => item.id === historyItem.parentIds[index])
+        const parent = itemsById.get(historyItem.parentIds[index]!)
         colorIdentifier = parent ? getLabelColorIdentifier(parent, colorMap) : undefined
       }
 

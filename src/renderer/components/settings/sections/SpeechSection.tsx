@@ -11,6 +11,7 @@ import {
   type ChordModifiers,
   type ShortcutKeyEvent
 } from '@shared/shortcut'
+import { formatSize, modelLabel } from '../../../lib/speech-format'
 import { useSettings } from '../../../state/settings'
 import { useEntitlement } from '../../../state/entitlement'
 import { SettingsSection } from '../SettingsSection'
@@ -171,20 +172,6 @@ const LANGUAGES: { value: string; label: string }[] = [
   { value: 'es', label: 'Spanish' },
   { value: 'ja', label: 'Japanese' }
 ]
-
-/** `1600` -> `"1.6 GB"`, `142` -> `"142 MB"`. Used for both the approximate (undownloaded) and
- *  real (downloaded) size, so the two read consistently in the same row. */
-function formatSize(mb: number): string {
-  return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${Math.round(mb)} MB`
-}
-
-/** `large-v3-turbo` -> `"Large V3 Turbo"`. */
-function modelLabel(id: string): string {
-  return id
-    .split('-')
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ')
-}
 
 export function SpeechSection({
   isActive,

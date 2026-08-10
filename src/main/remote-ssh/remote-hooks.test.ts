@@ -28,7 +28,7 @@ function harness(
     }
     // resolve the remote $HOME probe → absolute remote paths build from this.
     if (joined.includes('$HOME')) return { code: 0, stdout: '/home/u' }
-    if (joined.includes('cat /home/u/.claude/settings.json')) return { code: 0, stdout: '{}' }
+    if (joined.includes("cat '/home/u/.claude/settings.json'")) return { code: 0, stdout: '{}' }
     // the end-to-end tunnel verification curl (runs in ARGS, unlike the script's stdin curl).
     if (joined.includes('%{http_code}')) return { code: 0, stdout: verifyAnswers.shift() ?? '204' }
     return { code: 0, stdout: '' }
@@ -48,8 +48,8 @@ describe('RemoteHooks.setup', () => {
     const joined = calls.map((c) => c.args.join(' '))
     // reverse forward binds the ABSOLUTE remote socket (no unexpanded ~).
     expect(joined.some((j) => j.includes('-O forward') && j.includes('/home/u/.nodeterm/hook-p1.sock:127.0.0.1:51234'))).toBe(true)
-    // endpoint file written to the absolute PER-PROJECT path, with the absolute sock + token.
-    expect(joined.some((j) => j.includes('cat > /home/u/.nodeterm/hook-endpoint-p1.env'))).toBe(true)
+    // endpoint file written to the absolute PER-PROJECT path (posix-quoted), with the absolute sock + token.
+    expect(joined.some((j) => j.includes("cat > '/home/u/.nodeterm/hook-endpoint-p1.env'"))).toBe(true)
     expect(
       calls.some(
         (c) =>
@@ -58,8 +58,8 @@ describe('RemoteHooks.setup', () => {
       )
     ).toBe(true)
     // managed script written to the absolute path + config merged with the guarded command.
-    expect(joined.some((j) => j.includes('cat > /home/u/.nodeterm/agent-hooks/claude.sh'))).toBe(true)
-    expect(joined.some((j) => j.includes('cat > /home/u/.claude/settings.json'))).toBe(true)
+    expect(joined.some((j) => j.includes("cat > '/home/u/.nodeterm/agent-hooks/claude.sh'"))).toBe(true)
+    expect(joined.some((j) => j.includes("cat > '/home/u/.claude/settings.json'"))).toBe(true)
     expect(calls.some((c) => (c.stdin ?? '').includes('--unix-socket'))).toBe(true)
     // The merged command guards on the script still existing — a removed ~/.nodeterm must not
     // make every prompt fail the hook (a non-zero UserPromptSubmit hook blocks the prompt).
@@ -151,7 +151,7 @@ describe('RemoteHooks.setup', () => {
       if (joined.includes('$HOME')) return { code: 0, stdout: '/home/u' }
       if (joined.includes('-O forward')) return { code: ++forwards === 1 ? 1 : 0, stdout: '' }
       if (joined.includes('%{http_code}')) return { code: 0, stdout: '204' }
-      if (joined.includes('cat /home/u/.claude/settings.json')) return { code: 0, stdout: '{}' }
+      if (joined.includes("cat '/home/u/.claude/settings.json'")) return { code: 0, stdout: '{}' }
       return { code: 0, stdout: '' }
     })
     const rh = new RemoteHooks({ run })
@@ -168,7 +168,7 @@ describe('RemoteHooks.setup', () => {
     expect(b?.endpointPath).toBe('/home/u/.nodeterm/hook-endpoint-ssh-browse-xyz.env')
     // the browse writes ITS OWN endpoint file, never the real project's.
     const joined = calls.map((c) => c.args.join(' '))
-    expect(joined.some((j) => j.includes('cat > /home/u/.nodeterm/hook-endpoint-ssh-browse-xyz.env'))).toBe(true)
+    expect(joined.some((j) => j.includes("cat > '/home/u/.nodeterm/hook-endpoint-ssh-browse-xyz.env'"))).toBe(true)
     expect(joined.some((j) => j.includes('hook-endpoint-proj.env'))).toBe(false)
   })
 })

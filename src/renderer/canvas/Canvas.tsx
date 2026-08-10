@@ -511,6 +511,15 @@ function toKanbanSession(n: CanvasNode): KanbanSession | null {
   }
 }
 
+/** Board-feed title for a node id: '' ONLY for a dead node; a live card with no title maps to
+ *  'Untitled'. Uses the same `toKanbanSession` the card list uses, so the two can't disagree
+ *  about a node's name. One definition — this invariant is load-bearing for boardLogEvents. */
+function cardTitleOf(nodes: readonly CanvasNode[], nodeId: string): string {
+  const n = nodes.find((x) => x.id === nodeId)
+  const card = n ? toKanbanSession(n) : null
+  return card ? card.title || 'Untitled' : ''
+}
+
 /** Stable empty card list, so the closed board's memo never churns array identity. */
 const NO_KANBAN_SESSIONS: KanbanSession[] = []
 
@@ -1710,16 +1719,10 @@ export function Canvas() {
       const prev = useProjects.getState().getProject(id)?.kanban ?? seedBoard
       useProjects.getState().setProjectKanban(id, next)
       markDirty() // rides the existing debounced persist (commitActiveToStore + workspace.save)
-      // cardTitle must return '' for — and ONLY for — nodes that no longer exist (the diff reads
-      // '' as "pruned removal, not a move"). A LIVE node with an empty title maps to 'Untitled',
-      // never '' (see boardLogEvents' JSDoc). Resolved from the live nodes through the same
-      // `toKanbanSession` the card list uses, so the two can't disagree about a node's name — and
-      // so this does not depend on the derived list, which only exists while the board is open.
-      const cardTitle = (nodeId: string): string => {
-        const n = nodesRef.current.find((x) => x.id === nodeId)
-        const card = n ? toKanbanSession(n) : null
-        return card ? card.title || 'Untitled' : ''
-      }
+      // cardTitleOf must return '' for — and ONLY for — nodes that no longer exist (the diff reads
+      // '' as "pruned removal, not a move"; see boardLogEvents' JSDoc). Resolved from the live
+      // nodes, not the derived card list, which only exists while the board is open.
+      const cardTitle = (nodeId: string): string => cardTitleOf(nodesRef.current, nodeId)
       for (const { nodeId, event } of boardLogEvents(prev, next, cardTitle)) {
         useBoardLog.getState().append(api, id, { kind: 'event', nodeId, event })
       }
@@ -2342,35 +2345,40 @@ export function Canvas() {
       setLinkEdges(valid)
       return // re-runs with the pruned set
     }
-    const infoOf = (id: string) => {
-      const n = nodes.find((nn) => nn.id === id)
-      const sticky = n?.type === 'sticky'
-      const agentId = sticky ? undefined : agentIdOf(id)
-      return {
-        id,
-        title: (n?.data.title as string) || id,
-        cwd: (n?.data.cwd as string) || '',
-        note: sticky ? ((n?.data.text as string) ?? '') : undefined,
-        sticky,
-        agentId,
-        sessionId: agentId ? useAgentStatus.getState().byId[id]?.sessionId : undefined,
-        accountId: sticky ? undefined : ((n?.data.accountId as string) || undefined)
+    // Build the map INSIDE the debounce window: this effect re-fires on every drag frame (fresh
+    // `nodes` identity), and the map build walks every project + O(n) node lookups per endpoint —
+    // a cancelled debounce must cost nothing.
+    const t = setTimeout(() => {
+      const infoOf = (id: string) => {
+        const n = nodes.find((nn) => nn.id === id)
+        const sticky = n?.type === 'sticky'
+        const agentId = sticky ? undefined : agentIdOf(id)
+        return {
+          id,
+          title: (n?.data.title as string) || id,
+          cwd: (n?.data.cwd as string) || '',
+          note: sticky ? ((n?.data.text as string) ?? '') : undefined,
+          sticky,
+          agentId,
+          sessionId: agentId ? useAgentStatus.getState().byId[id]?.sessionId : undefined,
+          accountId: sticky ? undefined : ((n?.data.accountId as string) || undefined)
+        }
       }
-    }
-    // Merge in the link maps of every OTHER project (from their serialized nodes + bridges):
-    // main clears all link files before writing the pushed map, so pushing only the active
-    // project's map would sever the links of background projects whose agents keep running.
-    const { projects, activeProjectId } = useProjects.getState()
-    const map = {
-      ...buildBackgroundLinkMaps(
-        projects,
-        activeProjectId,
-        (id) => useAgentStatus.getState().byId[id]?.sessionId,
-        (id) => useAgentStatus.getState().byId[id]?.agentId
-      ),
-      ...buildLinkMap(valid, infoOf)
-    }
-    const t = setTimeout(() => void window.nodeTerminal.contextLink.setLinks(map), 150)
+      // Merge in the link maps of every OTHER project (from their serialized nodes + bridges):
+      // main clears all link files before writing the pushed map, so pushing only the active
+      // project's map would sever the links of background projects whose agents keep running.
+      const { projects, activeProjectId } = useProjects.getState()
+      const map = {
+        ...buildBackgroundLinkMaps(
+          projects,
+          activeProjectId,
+          (id) => useAgentStatus.getState().byId[id]?.sessionId,
+          (id) => useAgentStatus.getState().byId[id]?.agentId
+        ),
+        ...buildLinkMap(valid, infoOf)
+      }
+      void window.nodeTerminal.contextLink.setLinks(map)
+    }, 150)
     return () => clearTimeout(t)
     // linkSessionSig is read only as an effect trigger — infoOf re-reads sessionIds via getState().
   }, [linkEdges, nodes, setLinkEdges, agentIdOf, linkSessionSig])
@@ -6503,13 +6511,8 @@ export function Canvas() {
             store.setProjectKanban(pid, next)
             markDirty()
             // Board-log the move through the same diff funnel the UI uses (card-moved), so the
-            // board feed reads identically whether a person or an agent moved the card. cardTitle
-            // returns '' ONLY for a dead node; a live card with no title maps to 'Untitled'.
-            const cardTitle = (id: string): string => {
-              const n = nodesRef.current.find((x) => x.id === id)
-              const card = n ? toKanbanSession(n) : null
-              return card ? card.title || 'Untitled' : ''
-            }
+            // board feed reads identically whether a person or an agent moved the card.
+            const cardTitle = (id: string): string => cardTitleOf(nodesRef.current, id)
             for (const { nodeId: nid, event } of boardLogEvents(prev, next, cardTitle)) {
               useBoardLog.getState().append(api, pid, { kind: 'event', nodeId: nid, event })
             }
@@ -7483,7 +7486,7 @@ export function Canvas() {
     isSshProject,
     newProjectFile,
     addProject,
-    fitView,
+    fitAll,
     persist,
     switchProject,
     goToNode,

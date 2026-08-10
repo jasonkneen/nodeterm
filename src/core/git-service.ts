@@ -683,9 +683,14 @@ export class GitService {
         const p = parseCloneProgress(text)
         if (p) platform().broadcast(IPC.gitCloneProgress, p)
       })
-      // Failure/abort: remove the dir we claimed (never anything pre-existing).
+      // Failure/abort: remove the dir we claimed (never anything pre-existing). A spawn failure
+      // fires BOTH 'error' and 'close', so finish exactly once, and release the single-flight
+      // slot only if it is still ours — a retry may have claimed it between the two events.
+      let settled = false
       const finishFail = (message: string): void => {
-        activeClone = null
+        if (settled) return
+        settled = true
+        if (activeClone === rec) activeClone = null
         void fs.promises.rm(clonePath, { recursive: true, force: true })
         resolve({ ok: false, message })
       }
@@ -693,7 +698,9 @@ export class GitService {
       child.on('close', (code) => {
         if (rec.aborted) return finishFail('aborted')
         if (code === 0) {
-          activeClone = null
+          if (settled) return
+          settled = true
+          if (activeClone === rec) activeClone = null
           resolve({ ok: true, message: clonePath })
           return
         }

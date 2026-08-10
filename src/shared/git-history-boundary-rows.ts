@@ -5,11 +5,12 @@ import type { GitHistoryGraphNode, GitHistoryItemViewModel } from './git-history
 export const GIT_HISTORY_INCOMING_CHANGES_ID = 'git-history-incoming-changes'
 export const GIT_HISTORY_OUTGOING_CHANGES_ID = 'git-history-outgoing-changes'
 
-function cloneNode(node: GitHistoryGraphNode): GitHistoryGraphNode {
+/** Shared with git-history-graph.ts (which imports from this module — the reverse would cycle). */
+export function cloneNode(node: GitHistoryGraphNode): GitHistoryGraphNode {
   return { id: node.id, color: node.color }
 }
 
-function findLastIndex<T>(items: readonly T[], predicate: (item: T) => boolean): number {
+export function findLastIndex<T>(items: readonly T[], predicate: (item: T) => boolean): number {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     if (predicate(items[index] as T)) {
       return index

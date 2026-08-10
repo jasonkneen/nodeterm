@@ -328,6 +328,10 @@ export function createPairingService(relayDeps?: PairingRelayDeps): PairingServi
       srv.once('error', reject)
       srv.listen(0, '0.0.0.0', () => {
         srv.removeListener('error', reject)
+        // A server-level 'error' after listen (accept failure under fd pressure) would otherwise
+        // be an uncaught exception in the main process — log and let the pairing window fail soft
+        // (same discipline as ssh-askpass's post-listen handler).
+        srv.on('error', (e) => console.warn('[pairing] server error', e))
         resolve()
       })
     })

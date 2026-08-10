@@ -154,6 +154,17 @@ export class Auth {
     return Object.prototype.hasOwnProperty.call(sessions, token)
   }
 
+  /** Revoke ONE session token (logout). Without this, a logged-out cookie value would keep
+   *  authenticating for the rest of its 30-day TTL — clearing the browser cookie alone does not
+   *  invalidate a token someone else may have captured. */
+  revokeSession(token: string | undefined): void {
+    if (!token) return
+    const sessions = this.loadSessions()
+    if (!Object.prototype.hasOwnProperty.call(sessions, token)) return
+    delete sessions[token]
+    this.persistSessions()
+  }
+
   revokeAll(): void {
     this.sessions = {}
     this.persistSessions()

@@ -107,7 +107,9 @@ export class RemoteHooks {
           // Our own spec may already be registered (a reconnect this run) — clear it first.
           await this.r.run(hookForwardCancelArgs(conn, controlPath, sock, hook.port)).catch(() => {})
         }
-        await this.r.run(childArgs(conn, controlPath, `mkdir -p ${remoteDir} && rm -f ${sock}`))
+        await this.r.run(
+          childArgs(conn, controlPath, `mkdir -p ${posixQuote(remoteDir)} && rm -f ${posixQuote(sock)}`)
+        )
         const fwd = await this.r.run(hookForwardArgs(conn, controlPath, sock, hook.port))
         if (fwd.code !== 0) continue
         verified = await this.verifyTunnel(conn, controlPath, sock, hook.token)
@@ -122,7 +124,7 @@ export class RemoteHooks {
       // 2. remote endpoint file (0600 via umask) — written only after the tunnel proved live,
       // so sessions are never pointed at a socket that answers nothing.
       await this.r.run(
-        childArgs(conn, controlPath, `umask 077; cat > ${endpoint}`),
+        childArgs(conn, controlPath, `umask 077; cat > ${posixQuote(endpoint)}`),
         remoteEndpointFileContents(sock, hook.token, hook.version)
       )
       // 3. install the managed hook for each JSON agent (script + merged config).
@@ -130,10 +132,12 @@ export class RemoteHooks {
         const script = `${remoteDir}/agent-hooks/${t.agentId}.sh`
         const config = `${home}/${t.config}`
         await this.r.run(
-          childArgs(conn, controlPath, `mkdir -p ${remoteDir}/agent-hooks && cat > ${script} && chmod 755 ${script}`),
+          childArgs(conn, controlPath, `mkdir -p ${posixQuote(`${remoteDir}/agent-hooks`)} && cat > ${posixQuote(script)} && chmod 755 ${posixQuote(script)}`),
           buildManagedScript(t.agentId)
         )
-        const { stdout: cfgRaw } = await this.r.run(childArgs(conn, controlPath, `cat ${config} 2>/dev/null || echo '{}'`))
+        const { stdout: cfgRaw } = await this.r.run(
+          childArgs(conn, controlPath, `cat ${posixQuote(config)} 2>/dev/null || echo '{}'`)
+        )
         let cfg: HookSettings = {}
         try {
           cfg = JSON.parse(cfgRaw || '{}') as HookSettings
@@ -142,7 +146,7 @@ export class RemoteHooks {
         }
         const merged = mergeManagedHook(cfg, buildManagedHookCommand(script), t.events)
         await this.r.run(
-          childArgs(conn, controlPath, `mkdir -p $(dirname ${config}) && cat > ${config}`),
+          childArgs(conn, controlPath, `mkdir -p "$(dirname ${posixQuote(config)})" && cat > ${posixQuote(config)}`),
           JSON.stringify(merged, null, 2)
         )
       }
@@ -580,7 +584,7 @@ export class RemoteHooks {
       const { config: next, changed } = ensureFullscreenTui(cfg)
       if (!changed) return // key already present (any value) → never overwrite the user's `/tui`
       await this.r.run(
-        childArgs(conn, controlPath, `mkdir -p $(dirname ${posixQuote(config)}) && cat > ${posixQuote(config)}`),
+        childArgs(conn, controlPath, `mkdir -p "$(dirname ${posixQuote(config)})" && cat > ${posixQuote(config)}`),
         JSON.stringify(next, null, 2)
       )
     } catch {
