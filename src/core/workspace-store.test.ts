@@ -453,10 +453,48 @@ describe('localProjectCwds (the phone bridge jail roots)', () => {
   })
 })
 
-describe('appendRemoteNode (phone-registered sessions over the relay)', () => {
-  it('appends into a local ref project file as an OUTSIDE edit (watcher must see it)', async () => {
+// Field bug 2026-08-10: `lastWritten` was populated on the READ paths with a RE-SERIALIZATION of
+// the parsed file, not with the bytes actually on disk. Any project.json whose formatting differs
+// (a teammate's editor, a git checkout, a trailing newline) therefore never matched isSelfWrite —
+// so EVERY fs event on it read as an external change, forever: spurious reloads and conflict bars.
+describe('watcher self-write detection compares the RAW file bytes', () => {
+  const reformat = async (file: string): Promise<string> => {
+    // Semantically identical, different bytes — exactly what another writer leaves behind.
+    const raw = (await fs.readFile(file, 'utf-8')) + '\n'
+    await fs.writeFile(file, raw)
+    return raw
+  }
+
+  it('load() records the bytes on disk, not a re-serialization of them', async () => {
+    await new WorkspaceStore().save(ws([project({ cwd: projRoot })]))
+    const file = path.join(projRoot, '.nodeterm/project.json')
+    const raw = await reformat(file)
+
+    const store = new WorkspaceStore()
+    await store.load()
+    expect(store.isSelfWrite(file, raw)).toBe(true)
+    // A genuine outside edit still reads as one.
+    expect(store.isSelfWrite(file, raw.replace('"name"', '"nAme"'))).toBe(false)
+  })
+
+  it('readLocalRef records the bytes on disk too (the watcher re-read path)', async () => {
     const store = new WorkspaceStore()
     await store.save(ws([project({ cwd: projRoot })]))
+    const file = path.join(projRoot, '.nodeterm/project.json')
+    const raw = await reformat(file)
+
+    expect(await store.readLocalRefByPath(file)).toMatchObject({ id: 'p1' })
+    // Editors and git touch a file several times: the follow-up events for the SAME bytes must
+    // not each re-broadcast an "external change".
+    expect(store.isSelfWrite(file, raw)).toBe(true)
+  })
+})
+
+describe('appendRemoteNode (phone-registered sessions over the relay)', () => {
+  it('appends into a local ref project file and broadcasts the change itself', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    fake.sent.length = 0
     const ok = await store.appendRemoteNode('p1', { id: 'term-zz1-1', title: 'Mobile' })
     expect(ok).toBe(true)
     const file = path.join(projRoot, '.nodeterm/project.json')
@@ -464,9 +502,15 @@ describe('appendRemoteNode (phone-registered sessions over the relay)', () => {
     const f = JSON.parse(raw)
     expect(f.rev).toBe(2)
     expect(f.nodes.map((n: { id: string }) => n.id)).toContain('term-zz1-1')
-    // NOT a self-write: the workspace watcher must treat this as an outside edit and broadcast
-    // it, so the renderer adopts the node onto the live canvas.
-    expect(store.isSelfWrite(file, raw)).toBe(false)
+    // This write is OURS. It used to be left out of `lastWritten` on purpose, so the watcher would
+    // fire and notify the renderer — a side channel that only worked while the watcher's byte
+    // comparison happened to be reliable. The notification is now explicit, so the write is
+    // recorded like every other one of ours.
+    expect(store.isSelfWrite(file, raw)).toBe(true)
+    const broadcast = fake.sent.filter((s) => s.channel === 'workspace:external-change')
+    expect(broadcast).toHaveLength(1)
+    expect(broadcast[0].args[0]).toMatchObject({ id: 'p1', cwd: projRoot })
+    expect(broadcast[0].args[0].nodes.map((n: { id: string }) => n.id)).toContain('term-zz1-1')
   })
 
   it('refuses unknown / ssh / cwd-less projects and corrupt files (nothing written)', async () => {
@@ -910,6 +954,47 @@ describe('save corruption hardening', () => {
     expect(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')).toBe('not json')
   })
 
+  // Sidelining alone left the user in an empty workspace with no explanation ("my projects are
+  // gone") even though every .nodeterm/project.json is intact. The load path says so, once.
+  it('a sidelined index broadcasts the recovery note once, with the backup filename', async () => {
+    await fs.writeFile(path.join(userData, 'workspace.json'), 'not json')
+    const store = new WorkspaceStore()
+    await store.load()
+    const notes = fake.sent.filter((m) => m.channel === 'workspace:corrupt-recovered')
+    expect(notes).toHaveLength(1)
+    expect(notes[0].args[0]).toMatch(/^workspace\.json\.corrupt-\d+$/)
+    expect(await fs.readdir(userData)).toContain(notes[0].args[0])
+    // Second load of the same run (the sidelined copy is still there, index gone) stays quiet.
+    await store.load()
+    expect(fake.sent.filter((m) => m.channel === 'workspace:corrupt-recovered')).toHaveLength(1)
+  })
+
+  it('a read-only load (sideline: false) never broadcasts the recovery note', async () => {
+    await fs.writeFile(path.join(userData, 'workspace.json'), 'not json')
+    await new WorkspaceStore().load({ sideline: false })
+    expect(fake.sent.some((m) => m.channel === 'workspace:corrupt-recovered')).toBe(false)
+  })
+
+  // Crash between the sideline rename and the next index write: workspace.json is simply MISSING
+  // next to the backup, which is indistinguishable from a first run unless we look.
+  it('a missing index next to an existing .corrupt- backup still broadcasts (newest backup)', async () => {
+    await fs.writeFile(path.join(userData, 'workspace.json.corrupt-100'), 'old')
+    await fs.writeFile(path.join(userData, 'workspace.json.corrupt-900'), 'newer')
+    await new WorkspaceStore().load()
+    const notes = fake.sent.filter((m) => m.channel === 'workspace:corrupt-recovered')
+    expect(notes).toHaveLength(1)
+    expect(notes[0].args[0]).toBe('workspace.json.corrupt-900')
+  })
+
+  it('a normal load (and a first run) broadcasts nothing', async () => {
+    await new WorkspaceStore().save(ws([project({ cwd: projRoot })]))
+    await new WorkspaceStore().load() // healthy index
+    expect(fake.sent.some((m) => m.channel === 'workspace:corrupt-recovered')).toBe(false)
+    await fs.rm(path.join(userData, 'workspace.json'))
+    await new WorkspaceStore().load() // first run: nothing on disk at all
+    expect(fake.sent.some((m) => m.channel === 'workspace:corrupt-recovered')).toBe(false)
+  })
+
   it('a fresh store may not replace a populated index with an empty workspace', async () => {
     await new WorkspaceStore().save(ws([project({ cwd: projRoot })]))
     const before = await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')
@@ -917,6 +1002,49 @@ describe('save corruption hardening', () => {
     // (transient read failure, or a hydrate that raced the load).
     await new WorkspaceStore().save(ws([]))
     expect(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')).toBe(before)
+  })
+
+  it('a failed atomic write removes its own temp file (index write)', async () => {
+    // Force the rename to fail: the target is a directory. The unique temp name never self-heals
+    // the way the old fixed one did, so the failed write must clean up after itself.
+    await fs.mkdir(path.join(userData, 'workspace.json'))
+    await expect(new WorkspaceStore().save(ws([project({ cwd: projRoot })]))).rejects.toThrow()
+    const litter = (await fs.readdir(userData)).filter((n) => n.endsWith('.tmp'))
+    expect(litter).toEqual([])
+  })
+
+  it('a swallowed project-file write failure still leaves no temp litter in .nodeterm', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    const file = path.join(projRoot, '.nodeterm', 'project.json')
+    await fs.rm(file)
+    await fs.mkdir(file) // rename now fails; save() swallows per-file errors by design
+    await store.save(ws([project({ cwd: projRoot, name: 'renamed' })]))
+    const litter = (await fs.readdir(path.join(projRoot, '.nodeterm'))).filter((n) => n.endsWith('.tmp'))
+    expect(litter).toEqual([])
+  })
+
+  it('load() sweeps stale tmp litter from dead writers, sparing this process and other files', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    const nodeterm = path.join(projRoot, '.nodeterm')
+    await fs.writeFile(path.join(userData, 'workspace.json.tmp'), 'x') // legacy fixed name
+    await fs.writeFile(path.join(userData, 'workspace.json.99999.1.tmp'), 'x') // dead pid
+    await fs.writeFile(path.join(nodeterm, 'project.json.99999.2.tmp'), 'x') // dead pid
+    const mine = `project.json.${process.pid}.7.tmp` // a live writer of THIS process — never swept
+    await fs.writeFile(path.join(nodeterm, mine), 'x')
+    const loaded = await new WorkspaceStore().load()
+    expect(loaded.projects[0]?.nodes.map((n) => n.id)).toEqual(['term-1']) // real files untouched
+    expect((await fs.readdir(userData)).filter((n) => n.endsWith('.tmp'))).toEqual([])
+    expect((await fs.readdir(nodeterm)).filter((n) => n.endsWith('.tmp'))).toEqual([mine])
+  })
+
+  it('a read-only load (sideline: false) sweeps nothing', async () => {
+    await new WorkspaceStore().save(ws([project({ cwd: projRoot })]))
+    await fs.writeFile(path.join(userData, 'workspace.json.99999.1.tmp'), 'x')
+    await new WorkspaceStore().load({ sideline: false })
+    expect((await fs.readdir(userData)).filter((n) => n.endsWith('.tmp')))
+      .toEqual(['workspace.json.99999.1.tmp'])
   })
 
   it('closing every project after a successful load still persists the empty workspace', async () => {

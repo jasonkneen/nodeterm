@@ -610,6 +610,10 @@ export interface WorkspaceApi {
    *  project folders; `exec` = the custom shell / advanced ssh args of already-open projects moved
    *  out of the shared project file into this machine's own workspace index (@shared/node-exec). */
   onMigrated(cb: (kind: WorkspaceMigrationKind) => void): () => void
+  /** Fired once per run when a load found the workspace index unreadable and preserved it as
+   *  `workspace.json.corrupt-<ts>` (the payload). The projects themselves are untouched — their
+   *  canvases live in each <cwd>/.nodeterm/project.json — so the note tells the user to re-add them. */
+  onCorruptRecovered(cb: (backupFile: string) => void): () => void
   /** Fired when a project file changed on disk outside the app (git pull, sync, teammate). */
   onExternalChange(cb: (project: Project) => void): () => void
 }
@@ -820,6 +824,14 @@ export interface Settings {
    *  directly (grab cursor), for mouse users who pan constantly; box-select then moves to
    *  Shift+drag (React Flow's selectionKeyCode). */
   canvasDragMode: 'select' | 'pan'
+  /**
+   * Browser memory saver: release a browser/web node's page after it has been hidden for
+   * `BROWSER_DISCARD_MS` (5 min), reloading it from its URL when it is shown again. Each
+   * `<webview>` is a whole Chromium renderer process and the canvas caps nothing, so an
+   * afternoon of opened pages is otherwise permanently resident. On by default — the cost is a
+   * reload (and the lost back/forward stack, which a webview cannot serialize), not lost work.
+   */
+  browserMemorySaver: boolean
   accent: string
   tmuxEnabled: boolean
   /** GPU (WebGL) terminal rendering. 'off' routes every terminal to xterm's DOM renderer.
@@ -838,6 +850,9 @@ export interface Settings {
    *  renderer. See `resolveTerminalRenderer` (shared/webgl.ts) for the full history. */
   terminalGpuRendering: 'auto' | 'on' | 'off' | 'shared'
   tmuxScrollback: number
+  /** Minutes a terminal may sit fully offscreen before its xterm+PTY client is torn down in
+   *  place (tmux keeps the session; re-approach reattaches and redraws). 0 = never. */
+  offscreenTerminalMinutes: number
   /** AI commit message agent: a local coding-agent CLI run read-only. */
   commitAgent: 'claude' | 'codex' | 'custom'
   /** For commitAgent='custom': command template; {prompt} placeholder optional (else stdin). */
@@ -971,10 +986,12 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalMiddleClickPaste: false,
   wheelZoom: false,
   canvasDragMode: 'select',
+  browserMemorySaver: true,
   accent: '#0a84ff',
   tmuxEnabled: true,
   terminalGpuRendering: 'auto',
   tmuxScrollback: 50000,
+  offscreenTerminalMinutes: 10,
   commitAgent: 'claude',
   commitAgentCommand: '',
   commitExtraPrompt: '',
@@ -1888,7 +1905,7 @@ export interface PairedDevice {
 /** Phone-pairing (nodeterm iOS "scan a QR" flow) bridge. */
 export interface PairingApi {
   /** Start the one-shot LAN listener; resolves with the QR payload + an SSH-reachable hint. */
-  start(): Promise<{ payload: string; sshOpen: boolean }>
+  start(): Promise<{ payload: string; sshOpen: boolean; relayPlan?: 'ok' | 'dev' | 'off' }>
   /** Cancel an in-flight pairing (e.g. when the settings section unmounts). */
   stop(): Promise<void>
   /** Fires once when pairing finishes (ok=true paired, ok=false timeout). Returns unsubscribe. */
