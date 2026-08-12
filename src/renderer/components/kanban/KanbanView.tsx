@@ -89,6 +89,7 @@ type Drag =
 /** Shared empty results — stable identities so memoized cards/columns see "no change". */
 const NO_LABELS: KanbanLabel[] = []
 const NO_CARDS: KanbanSession[] = []
+const NO_GITHUB_CARDS: GitHubIssueCardView[] = []
 
 /** Full-page session board OVER the canvas. The canvas stays mounted underneath (its
  *  agent-status listeners must keep running, and display:none would 0×0-resize every
@@ -364,6 +365,12 @@ export const KanbanView = memo(function KanbanView({
   const handleMoveGitHub = requestGitHubMove
   const githubPage = useCallback((columnId: string | null) =>
     github?.pages[columnId ?? 'ungrouped'], [github])
+  // Stable identity: KanbanColumn passes its own column id, so one callback serves every column
+  // without re-minting a closure per render (which would defeat the columns' memo).
+  const handleLoadMoreGitHub = useCallback(
+    (columnId: string | null) => void loadMoreGitHub(api.githubIssues, projectId, columnId),
+    [loadMoreGitHub, api.githubIssues, projectId]
+  )
   const sessionVisible = source !== 'github'
   const githubVisible = source !== 'sessions' && !!board.github
 
@@ -471,7 +478,7 @@ export const KanbanView = memo(function KanbanView({
           <KanbanColumn
             column={null}
             cards={sessionVisible ? columnCards.ungrouped : NO_CARDS}
-            githubCards={githubVisible ? githubPage(null)?.items ?? [] : []}
+            githubCards={githubVisible ? githubPage(null)?.items ?? NO_GITHUB_CARDS : NO_GITHUB_CARDS}
             githubColumns={board.columns}
             githubMoving={github?.moving}
             githubReadOnly={githubReadOnly}
@@ -492,14 +499,14 @@ export const KanbanView = memo(function KanbanView({
             onMoveGitHub={handleMoveGitHub}
             onGitHubDragStart={handleGitHubDragStart}
             hasMoreGitHub={githubVisible && !!githubPage(null)?.nextCursor}
-            onLoadMoreGitHub={() => void loadMoreGitHub(api.githubIssues, projectId, null)}
+            onLoadMoreGitHub={handleLoadMoreGitHub}
           />
           {board.columns.map((col) => (
             <KanbanColumn
               key={col.id}
               column={col}
               cards={sessionVisible ? columnCards.byColumn.get(col.id) ?? NO_CARDS : NO_CARDS}
-              githubCards={githubVisible ? githubPage(col.id)?.items ?? [] : []}
+              githubCards={githubVisible ? githubPage(col.id)?.items ?? NO_GITHUB_CARDS : NO_GITHUB_CARDS}
               githubColumns={board.columns}
               githubMoving={github?.moving}
               githubReadOnly={githubReadOnly}
@@ -524,7 +531,7 @@ export const KanbanView = memo(function KanbanView({
               onMoveGitHub={handleMoveGitHub}
               onGitHubDragStart={handleGitHubDragStart}
               hasMoreGitHub={githubVisible && !!githubPage(col.id)?.nextCursor}
-              onLoadMoreGitHub={() => void loadMoreGitHub(api.githubIssues, projectId, col.id)}
+              onLoadMoreGitHub={handleLoadMoreGitHub}
             />
           ))}
           <button

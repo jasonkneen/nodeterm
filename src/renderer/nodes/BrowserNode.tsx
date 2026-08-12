@@ -1,4 +1,5 @@
 import { Handle, NodeResizer, Position, useReactFlow, type NodeProps } from '@xyflow/react'
+import { useCallback } from 'react'
 import type { CanvasNode } from '../state/workspace'
 import { BrowserSurface } from './BrowserSurface'
 
@@ -9,6 +10,10 @@ import { BrowserSurface } from './BrowserSurface'
  */
 export default function BrowserNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const { deleteElements, updateNodeData } = useReactFlow()
+  // Stable identities: BrowserSurface's listener effect depends on these, so a fresh arrow per
+  // render would tear down and re-add all its webview listeners on every node re-render.
+  const onUrlChange = useCallback((u: string) => updateNodeData(id, { url: u }), [updateNodeData, id])
+  const onTitleChange = useCallback((t: string) => updateNodeData(id, { title: t }), [updateNodeData, id])
 
   return (
     <div className={`term-node browser-node${selected ? ' selected' : ''}`} style={{ borderTopColor: data.color }}>
@@ -44,8 +49,8 @@ export default function BrowserNode({ id, data, selected }: NodeProps<CanvasNode
         <BrowserSurface
           nodeId={id}
           url={(data.url as string) ?? ''}
-          onUrlChange={(u) => updateNodeData(id, { url: u })}
-          onTitleChange={(t) => updateNodeData(id, { title: t })}
+          onUrlChange={onUrlChange}
+          onTitleChange={onTitleChange}
         />
       </div>
     </div>

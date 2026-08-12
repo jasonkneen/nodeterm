@@ -75,12 +75,17 @@ export class RpcClient {
   // `await ready()`) would otherwise miss it. Buffered here (capped) and flushed on subscribe.
   private early: Array<{ channel: string; args: unknown[] }> = []
   private closeCbs = new Set<() => void>()
+  /** True once the carrier closed. Transports never reconnect (the overlay reloads the tab), so
+   *  from that point every new request is as unanswerable as the in-flight ones failPending
+   *  rejected — fail it immediately instead of letting the promise hang. */
+  private closed = false
 
   constructor(transport: FrameTransport | string) {
     this.transport =
       typeof transport === 'string' ? new WebSocketFrameTransport(transport) : transport
     this.transport.onMessage((data) => this.onMessage(data))
     this.transport.onClose(() => {
+      this.closed = true
       // Fail the in-flight requests BEFORE the overlay hooks: a response can only arrive over the
       // carrier that carried the request, so once it is gone they are unanswerable.
       this.failPending()
@@ -157,6 +162,15 @@ export class RpcClient {
 
   /** Send a request and resolve with its result (or reject with the coded error). */
   request(method: string, ...args: unknown[]): Promise<unknown> {
+    if (this.closed) {
+      // A browser WebSocket.send() on a closed socket drops the frame silently, and failPending
+      // already ran — nothing would ever settle this promise. Reject with the same coded error.
+      return Promise.reject(
+        Object.assign(new Error('The connection to the server was lost.'), {
+          code: E_DISCONNECTED
+        })
+      )
+    }
     const id = this.nextId++
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject })
@@ -168,6 +182,7 @@ export class RpcClient {
 
   /** Send a fire-and-forget cast (no response expected). */
   cast(method: string, ...args: unknown[]): void {
+    if (this.closed) return
     this.transport.send(JSON.stringify({ t: 'cast', method, ...encodeArgs(args) }))
   }
 
@@ -189,7 +204,10 @@ export class RpcClient {
     }
     return () => {
       set!.delete(fn)
-      if (set!.size === 0) this.channels.delete(channel)
+      // Identity-guard the map delete: a second unsubscribe call (or one racing a re-subscribe)
+      // must not remove a NEW listener set that was created under the same channel name since —
+      // that would silently divert the channel's events into the early buffer forever.
+      if (set!.size === 0 && this.channels.get(channel) === set) this.channels.delete(channel)
     }
   }
 }

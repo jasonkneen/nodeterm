@@ -214,8 +214,10 @@ export function negotiateEncoding(header: string | undefined): 'br' | 'gzip' | n
 }
 
 /** `<encoding> <path>` → the compressed body for one exact file revision (`sig`). The promise is
- *  cached, not just its result, so N concurrent first-hits compress once. */
-const compressCache = new Map<string, { sig: string; body: Promise<Buffer | null> }>()
+ *  cached, not just its result, so N concurrent first-hits compress once. `size` is the settled
+ *  body's byte count (0 until resolved) so replacing a stale revision can uncount it — without
+ *  that, the byte ledger only ever grows and eventually trips a spurious full-cache clear. */
+const compressCache = new Map<string, { sig: string; body: Promise<Buffer | null>; size: number }>()
 let compressCacheBytes = 0
 
 function compress(buf: Buffer, enc: 'br' | 'gzip'): Promise<Buffer | null> {
@@ -244,26 +246,34 @@ function compressedBody(
 ): Promise<Buffer | null> {
   const hit = compressCache.get(key)
   if (hit && hit.sig === sig) return hit.body
-  const body = identity()
+  // Replacing a stale revision: uncount its settled bytes (0 if it never resolved).
+  if (hit) compressCacheBytes -= hit.size
+  const entry = { sig, size: 0 } as { sig: string; body: Promise<Buffer | null>; size: number }
+  entry.body = identity()
     .then((buf) => compress(buf, enc))
     .then((out) => {
       if (!out) {
-        compressCache.delete(key)
+        if (compressCache.get(key) === entry) compressCache.delete(key)
         return null
       }
-      compressCacheBytes += out.length
-      if (compressCacheBytes > COMPRESS_CACHE_MAX_BYTES) {
-        compressCache.clear()
-        compressCacheBytes = 0
+      // Count the bytes only while this entry is still the cached one — a rebuild may have
+      // replaced (or the budget clear dropped) it while the compression was in flight.
+      if (compressCache.get(key) === entry) {
+        entry.size = out.length
+        compressCacheBytes += out.length
+        if (compressCacheBytes > COMPRESS_CACHE_MAX_BYTES) {
+          compressCache.clear()
+          compressCacheBytes = 0
+        }
       }
       return out
     })
     .catch(() => {
-      compressCache.delete(key)
+      if (compressCache.get(key) === entry) compressCache.delete(key)
       return null
     })
-  compressCache.set(key, { sig, body })
-  return body
+  compressCache.set(key, entry)
+  return entry.body
 }
 
 /** Test seam: drop the compressed-payload cache. */
@@ -477,6 +487,9 @@ export function createHttpHandler(
     }
 
     if (pathname === '/auth/logout' && method === 'POST') {
+      // Revoke server-side too: clearing the cookie alone leaves the token valid for its full
+      // TTL, so a captured cookie would outlive the logout.
+      auth.revokeSession(sessionTokenFromCookie(req.headers['cookie']))
       clearSessionCookie(req, res)
       redirect(res, 303, '/login')
       return

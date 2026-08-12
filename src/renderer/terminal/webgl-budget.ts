@@ -195,7 +195,10 @@ function drain(): void {
   for (const c of Array.from(owed)) {
     if (ops >= WEBGL_SWAPS_PER_DRAIN) break
     owed.delete(c)
-    if (!clients.has(c.id)) continue
+    // Identity check, not id presence: a remount may have superseded this entry under the same
+    // id, and granting/releasing through the STALE object would act on a dead mount's callbacks
+    // while the accounting (grantCount iterates the map) never sees it.
+    if (clients.get(c.id) !== c) continue
     if (c.releaseOwed) {
       c.releaseOwed = false
       // Only release if the reason still holds — a client that came back (visible again, zoom
@@ -396,8 +399,9 @@ function doGrant(c: Client): void {
 /** Attempt to grant `c` a context, reclaiming a hidden holder's slot if the budget is full. */
 function tryGrant(c: Client): void {
   cancelAcquire(c)
-  // Guard: the client may have gone hidden or been disposed between debounce start and fire.
-  if (!clients.has(c.id) || !c.visible || c.granted) return
+  // Guard: the client may have gone hidden, been disposed, or been SUPERSEDED by a remount under
+  // the same id between debounce start and fire — identity, not id presence, is the liveness test.
+  if (clients.get(c.id) !== c || !c.visible || c.granted) return
   // Master switch off → never grant; every terminal stays on the DOM renderer.
   if (!enabled) return
   // Zoomed below the suspend threshold → never grant (see setWebglZoom).
@@ -481,6 +485,9 @@ export function registerWebglClient(id: string, callbacks: WebglClientCallbacks)
   if (existing) {
     cancelAcquire(existing)
     cancelRelease(existing)
+    // Drop any parked drain work for the predecessor: a stale entry left in `owed` would
+    // otherwise reach tryGrant/doGrant through the dead mount's callbacks.
+    owed.delete(existing)
     if (existing.granted) {
       try {
         existing.release()

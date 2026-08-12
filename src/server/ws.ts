@@ -194,7 +194,23 @@ export function attachWsServer(server: http.Server, opts: WsServerOpts): void {
       const m = parseRpcMessage(text)
       if (!m) return
       if (m.t === 'req') {
-        void platform.dispatch(uiId, m).then((res) => ws.send(JSON.stringify(res)))
+        void platform.dispatch(uiId, m).then((res) => {
+          // dispatch never rejects, but stringify can throw on an unserializable handler result
+          // (BigInt, cycles) — answer with a coded error instead of leaving the client's await
+          // hanging forever (clients only get E_DISCONNECTED on socket close).
+          try {
+            ws.send(JSON.stringify(res))
+          } catch {
+            ws.send(
+              JSON.stringify({
+                t: 'res',
+                id: m.id,
+                ok: false,
+                error: { code: 'E_HANDLER', message: 'unserializable handler result' }
+              })
+            )
+          }
+        })
       } else if (m.t === 'cast') {
         platform.cast(uiId, m.method, m.args)
       }

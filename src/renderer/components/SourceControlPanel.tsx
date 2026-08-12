@@ -249,9 +249,16 @@ export function SourceControlPanel({
 
   const act = async (fn: () => Promise<GitResult>) => {
     setBusy(true)
-    const r = await fn()
-    setError(r.ok ? '' : r.message)
-    setBusy(false)
+    try {
+      const r = await fn()
+      setError(r.ok ? '' : r.message)
+    } catch (e) {
+      // Git calls can genuinely reject (main-side throw, relay disconnect) — without this the
+      // panel would stay busy forever, disabling every action button.
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
     await requestRefreshAll()
   }
 
@@ -906,8 +913,16 @@ export function SourceControlPanel({
             // Always try in-app: publish() reuses gh's login OR the user's existing git
             // HTTPS token, so an already-authenticated user never sees a terminal.
             setBusy(true)
-            const r = await git.publish(cwd!, name, isPrivate)
-            setBusy(false)
+            let r: Awaited<ReturnType<typeof git.publish>>
+            try {
+              r = await git.publish(cwd!, name, isPrivate)
+            } catch (e) {
+              // publish (network + gh) can reject outright — never leave the panel stuck busy.
+              setError(e instanceof Error ? e.message : String(e))
+              return
+            } finally {
+              setBusy(false)
+            }
             if (r.ok) {
               setError('')
               await requestRefreshAll()

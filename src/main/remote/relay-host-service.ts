@@ -238,8 +238,11 @@ export function initRelayHost(
     // already forces a fresh SAS+consent re-pair — no separate unpin is needed.
     const peerKeyB64 = entry.session?.peerKeyB64()
     // killRelayHostsByPeerKey → session.close() does NOT fire our `onClose` (that runs only on a wire
-    // drop, not a local close), so free the seat and notify the renderer here.
+    // drop, not a local close), so free the seat and notify the renderer here. A minted-but-not-yet-
+    // bridged seat has no peer key, but its listener may already be registered at the relay — close
+    // it directly, or the revoked offer keeps bridging until the relay TTL expires.
     if (peerKeyB64) killRelayHostsByPeerKey(peerKeyB64)
+    else entry.session?.close()
     byId.delete(msg.id!)
     send(IPC.relayHostClosed, { id: msg.id })
   })
